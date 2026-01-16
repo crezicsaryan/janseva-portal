@@ -17,16 +17,21 @@ const app = initializeApp(firebaseConfig);
 
 export const auth = getAuth(app);
 export const googleProvider = new GoogleAuthProvider();
+
+// Configure Google provider
+googleProvider.setCustomParameters({
+  prompt: 'select_account'
+});
 export const db = getFirestore(app);
 export const storage = getStorage(app); // <--- EXPORT THIS
 
-export const signInWithGoogle = () => {
-  return signInWithPopup(auth, googleProvider)
-    .then((result) => {
-      return result;
-    })
-    .catch((error) => {
-      console.error("Login Error:", error);
-      throw error;
-    });
+export const signInWithGoogle = async () => {
+  try {
+    const result = await signInWithPopup(auth, googleProvider);
+    return result;
+  } catch (error) {
+    // Re-throw error so calling code can handle it
+    console.error("Login Error:", error);
+    throw error;
+  }
 };

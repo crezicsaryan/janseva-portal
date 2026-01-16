@@ -1,15 +1,25 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Routes, Route, Link } from 'react-router-dom'; 
+import { Routes, Route, Link, useNavigate } from 'react-router-dom'; 
 import { signInWithGoogle, auth, db } from './firebase'; 
 import { signOut } from 'firebase/auth';
-import { collection, getDocs } from 'firebase/firestore'; 
+import { collection, getDocs, doc, setDoc, getDoc } from 'firebase/firestore'; 
 import gsap from 'gsap';
 import AdminPanel from './AdminPanel';
 import MyDocuments from './MyDocuments'; 
+import NavCategoriesBar from './NavCategoriesBar';
+import PublicSchemesPage from './PublicSchemesPage';
+import SchemeDetailPage from './SchemeDetailPage';
+import ScholarshipsPage from './ScholarshipsPage';
+import ScholarshipDetailPage from './ScholarshipDetailPage';
+import EligibleScholarships from './EligibleScholarships';
+import MyProfile from './MyProfile';
+import EditProfile from './EditProfile';
+import Navbar from './components/Navbar';
 import './App.css';
 
 // --- COMPONENT 1: USER PORTAL ---
 const UserPortal = () => {
+  const navigate = useNavigate();
   const [user, setUser] = useState(null);
   const [view, setView] = useState('preloader'); 
   const [loading, setLoading] = useState(false);
@@ -18,14 +28,24 @@ const UserPortal = () => {
   const [dbSchemes, setDbSchemes] = useState([]);
 
   const [formData, setFormData] = useState({
-    role: 'Student', age: '', gender: 'Male', state: 'Maharashtra', category: 'General', 
-    education: 'Class 12', landSize: '', income: ''
+    role: 'Student', 
+    age: '', 
+    gender: 'Male', 
+    state: 'Maharashtra', 
+    category: 'General', 
+    educationLevel: 'Class 12', 
+    class: 'Class 12',
+    course: '', 
+    religion: 'All',
+    annualIncome: '',
+    disabilityStatus: 'No'
   });
 
   const [results, setResults] = useState({ eligible: [], ineligible: [] });
 
   const preloaderRef = useRef(null);
   const textRef = useRef(null);
+  const signInInProgressRef = useRef(false);
 
   useEffect(() => {
     const tl = gsap.timeline();
@@ -35,7 +55,28 @@ const UserPortal = () => {
       .to(preloaderRef.current, { y: "-100%", duration: 0.8, delay: 0.5, ease: "power2.inOut", onComplete: () => setView('landing') });
   }, []);
 
-  useEffect(() => { auth.onAuthStateChanged((u) => { if (u) setUser(u); }); }, []);
+  useEffect(() => { 
+    const unsubscribe = auth.onAuthStateChanged((u) => { 
+      setUser(u || null); // Set user or null based on auth state (handles logout)
+      
+      // If user logged in
+      if (u) {
+        signInInProgressRef.current = false; // Reset sign-in flag
+        setLoading(false);
+        // If we're on landing page, navigate to form
+        setView(prevView => prevView === 'landing' ? 'form' : prevView);
+      } else {
+        // If user logged out, navigate to landing page (unless in preloader)
+        signInInProgressRef.current = false; // Reset sign-in flag
+        setView(prevView => prevView !== 'preloader' ? 'landing' : prevView);
+        setLoading(false);
+      }
+    });
+    
+    return () => {
+      unsubscribe(); // Cleanup subscription on unmount
+    };
+  }, []); // Empty dependency array - only run once on mount
 
   // 2. ADDED: Fetch Schemes on Load
   useEffect(() => {
@@ -59,53 +100,108 @@ const UserPortal = () => {
   };
 
   const handleStart = async () => {
-    if (user) { setView('form'); return; }
-    setLoading(true); 
-    try {
-      await signInWithGoogle();
-      setView('form');
-    } catch (error) {
-      if (error.code === 'auth/popup-blocked') alert("⚠️ Popup blocked!");
-      else if (error.code !== 'auth/cancelled-popup-request') alert("Login failed.");
+    // If user already logged in, just navigate to form
+    if (user) { 
+      setView('form'); 
+      return; 
     }
-    setLoading(false); 
+    
+    // Prevent multiple simultaneous sign-in attempts
+    if (signInInProgressRef.current || loading) {
+      console.log('Sign in already in progress...');
+      return;
+    }
+    
+    signInInProgressRef.current = true;
+    setLoading(true); 
+    
+    try {
+      // Call Google sign in
+      await signInWithGoogle();
+      // Success - auth state listener will handle navigation and loading state
+      // Don't set loading to false here, let auth state change handle it
+    } catch (error) {
+      console.error('Login error:', error);
+      setLoading(false);
+      signInInProgressRef.current = false;
+      
+      // Handle specific error cases
+      if (error.code === 'auth/popup-blocked') {
+        alert("⚠️ Popup blocked! Please allow popups for this site.");
+      } else if (error.code === 'auth/popup-closed-by-user') {
+        // User closed the popup - silently fail, don't show error
+      } else if (error.code === 'auth/cancelled-popup-request') {
+        // Multiple popup requests - silently fail
+      } else if (error.code === 'auth/network-request-failed') {
+        alert("Network error. Please check your internet connection.");
+      } else {
+        // Other errors - show message only if not a silent error
+        if (error.code && !error.code.includes('cancelled') && !error.code.includes('closed')) {
+          alert("Login failed. Please try again.");
+        }
+      }
+    }
   };
 
   const handleUserLogout = () => {
     signOut(auth).then(() => { setUser(null); setView('landing'); });
   };
 
-  const checkEligibility = async (e) => {
+  const checkUserProfile = async (user) => {
+    if (!user) return false;
+    try {
+      const profileDoc = await getDoc(doc(db, 'users', user.uid, 'profile', 'data'));
+      return profileDoc.exists();
+    } catch (error) {
+      console.error('Error checking user profile:', error);
+      return false;
+    }
+  };
+
+  const handlePrimaryCTA = async () => {
+    if (!user) {
+      // User not signed in - start the sign in process
+      await handleStart();
+    } else {
+      // User signed in - check if profile is completed
+      const hasProfile = await checkUserProfile(user);
+      if (hasProfile) {
+        navigate('/eligible-scholarships');
+      } else {
+        navigate('/edit-profile');
+      }
+    }
+  };
+
+  const saveProfileAndCheckEligibility = async (e) => {
     e.preventDefault();
     setLoading(true);
     try {
-      // We can use dbSchemes here since we already fetched them
-      const eligible = [], ineligible = [];
+      if (!user) {
+        alert('Please sign in first');
+        setLoading(false);
+        return;
+      }
 
-      dbSchemes.forEach(scheme => {
-        let reasons = [];
-        let isEligible = true;
-        const sRole = scheme.targetRole || 'All';
-        const sIncome = scheme.incomeLimit ? parseInt(scheme.incomeLimit) : 0;
-        const sMinAge = scheme.ageMin ? parseInt(scheme.ageMin) : 0;
-        const sMaxAge = scheme.ageMax ? parseInt(scheme.ageMax) : 100;
-        const sState = scheme.state || 'All India';
-        const sStatus = scheme.status || 'Draft';
+      // Save profile to Firestore
+      const profileData = {
+        ...formData,
+        userId: user.uid,
+        email: user.email,
+        displayName: user.displayName,
+        lastUpdated: new Date().toISOString()
+      };
 
-        if (sStatus !== 'Active') return; 
+      // Save to users/{userId}/profile/data
+      await setDoc(doc(db, 'users', user.uid, 'profile', 'data'), profileData);
 
-        if (sRole !== 'General Citizen' && sRole !== 'All' && sRole !== formData.role) { isEligible = false; reasons.push(`Only for ${sRole}s`); }
-        if (sIncome > 0 && (formData.income ? parseInt(formData.income) : 0) > sIncome) { isEligible = false; reasons.push(`Income < ₹${sIncome}`); }
-        const uAge = formData.age ? parseInt(formData.age) : 0;
-        if (uAge < sMinAge || uAge > sMaxAge) { isEligible = false; reasons.push(`Age mismatch`); }
-        if (sState !== 'All India' && !sState.includes('All') && sState.toLowerCase() !== formData.state.toLowerCase()) { isEligible = false; reasons.push(`Resident of ${sState} only`); }
-
-        if (isEligible) eligible.push({ ...scheme, _id: scheme.id });
-        else ineligible.push({ ...scheme, _id: scheme.id, reasons });
-      });
-      setResults({ eligible, ineligible });
-      setView('results');
-    } catch (err) { alert("Error checking schemes."); }
+      // Navigate to eligible scholarships page
+      navigate('/eligible-scholarships');
+      
+    } catch (err) {
+      console.error('Error saving profile:', err);
+      alert('Error saving profile. Please try again.');
+    }
     setLoading(false);
   };
 
@@ -121,46 +217,26 @@ const UserPortal = () => {
         </div>
       )}
 
-      {/* NAVBAR */}
-      {view !== 'preloader' && (
-        <nav className="navbar">
-          <div className="logo-section" onClick={() => setView('landing')}>
-            <div className="logo-circle">ज</div>
-            <div className="logo-text">जनसेवा</div>
-          </div>
-          <div className="nav-menu">
-            <span onClick={() => setView('landing')}>Home</span>
-            {user && <span onClick={() => setView('documents')}>My Documents</span>}
-            {/* UPDATED: Scroll Links */}
-            <span onClick={() => scrollToSection('scholarship-section')}>Scholarships</span>
-            <span onClick={() => scrollToSection('scheme-section')}>Schemes</span>
-          </div>
-          <div className="nav-actions">
-            {user ? (
-               <div className="user-menu">
-                 <span className="user-name">Hi, {user.displayName ? user.displayName.split(' ')[0] : 'User'}</span>
-                 <button className="btn-logout" onClick={handleUserLogout}>Logout</button>
-               </div>
-            ) : (
-               <button className="btn-orange-nav" onClick={handleStart} disabled={loading}>{loading ? "..." : "Sign Up"}</button>
-            )}
-          </div>
-        </nav>
-      )}
+      {/* NAVBAR - Professional */}
+      {view !== 'preloader' && <Navbar user={user} onNavigate={setView} onSignUp={handleStart} />}
 
       {/* 1. LANDING PAGE */}
       {view === 'landing' && (
         <div className="landing">
-          <header className="hero-section">
-            <div className="hero-content">
+          {/* PROFESSIONAL HERO SECTION */}
+          <header className="professional-hero">
+            <div className="professional-hero-content">
               <span className="badge-pill">● All Government Schemes in One Place</span>
               <h1>जनसेवा</h1>
               <h2>सरकारी योजना और छात्रवृत्ति खोजें</h2>
               <p>Discover government schemes and scholarships tailored to your eligibility.</p>
-              <div className="hero-btns">
-                <button className="btn-white-hero" onClick={handleStart} disabled={loading}>{loading ? "Please Wait..." : "Check Your Eligibility →"}</button>
-                {user && <button className="btn-outline-hero" onClick={() => setView('documents')}>Upload Documents</button>}
-              </div>
+              <button 
+                onClick={handlePrimaryCTA}
+                className="primary-cta-button"
+                disabled={loading}
+              >
+                {loading ? "Please Wait..." : "Check Your Eligibility"}
+              </button>
             </div>
           </header>
 
@@ -241,8 +317,8 @@ const UserPortal = () => {
               <div className="footer-links">
                 <h4>Quick Links</h4>
                 <p onClick={() => setView('landing')} style={{cursor:'pointer'}}>Home</p>
-                {/* UPDATED: Scroll Links in Footer */}
-                <p onClick={() => scrollToSection('scholarship-section')} style={{cursor:'pointer'}}>Scholarships</p>
+                {/* UPDATED: Navigation Links in Footer */}
+                <Link to="/scholarships" style={{color:'#94A3B8', textDecoration:'none', cursor:'pointer'}}>Scholarships</Link>
                 <p onClick={() => scrollToSection('scheme-section')} style={{cursor:'pointer'}}>Schemes</p>
               </div>
               <div className="footer-contact">
@@ -263,7 +339,7 @@ const UserPortal = () => {
         <div className="form-page-container">
           <div className="mandatory-form-card">
             <h2>👤 Complete Your Profile</h2>
-            <form onSubmit={checkEligibility}>
+            <form onSubmit={saveProfileAndCheckEligibility}>
               <div className="form-section">
                 <label>I am a:</label>
                 <div className="role-grid">
@@ -276,13 +352,23 @@ const UserPortal = () => {
                 </div>
               </div>
               <div className="input-group"><div><label>Age</label><input name="age" type="number" onChange={handleInputChange} required /></div><div><label>Gender</label><select name="gender" onChange={handleInputChange}><option>Male</option><option>Female</option></select></div></div>
-              <div className="input-group"><div><label>State</label><select name="state" onChange={handleInputChange}><option>Maharashtra</option><option>Delhi</option><option>UP</option><option>Other</option></select></div><div><label>Category</label><select name="category" onChange={handleInputChange}><option>General</option><option>OBC</option><option>SC</option><option>ST</option></select></div></div>
+              <div className="input-group"><div><label>State</label><select name="state" onChange={handleInputChange}><option>Maharashtra</option><option>Delhi</option><option>UP</option><option>Karnataka</option><option>Tamil Nadu</option><option>West Bengal</option><option>Gujarat</option><option>All India</option></select></div><div><label>Category</label><select name="category" onChange={handleInputChange}><option>General</option><option>OBC</option><option>SC</option><option>ST</option></select></div></div>
+              
+              <div className="input-group"><div><label>Religion</label><select name="religion" onChange={handleInputChange}><option>All</option><option>Hindu</option><option>Muslim</option><option>Christian</option><option>Sikh</option><option>Buddhist</option></select></div><div><label>Disability Status</label><select name="disabilityStatus" onChange={handleInputChange}><option>No</option><option>Yes</option></select></div></div>
               
               {formData.role === 'Student' && (
                 <div className="dynamic-box" style={{marginTop: '15px', padding: '10px', background: '#e0f2fe', borderRadius: '5px'}}>
                   <label>Education Level</label>
-                  <select name="education" onChange={handleInputChange} style={{marginTop: '5px', width: '100%'}}>
+                  <select name="educationLevel" onChange={handleInputChange} style={{marginTop: '5px', width: '100%'}}>
                     <option>Class 12</option><option>Undergraduate</option><option>Postgraduate</option>
+                  </select>
+                  <label style={{marginTop: '10px', display: 'block'}}>Class</label>
+                  <select name="class" onChange={handleInputChange} style={{marginTop: '5px', width: '100%'}}>
+                    <option>Class 9</option><option>Class 10</option><option>Class 11</option><option>Class 12</option><option>Graduation</option><option>Post Graduation</option>
+                  </select>
+                  <label style={{marginTop: '10px', display: 'block'}}>Course</label>
+                  <select name="course" onChange={handleInputChange} style={{marginTop: '5px', width: '100%'}}>
+                    <option>Engineering</option><option>Medical</option><option>Arts</option><option>Science</option><option>Commerce</option><option>Law</option><option>MBA</option><option>All</option>
                   </select>
                 </div>
               )}
@@ -295,9 +381,9 @@ const UserPortal = () => {
 
               <div className="form-section" style={{marginTop: '15px'}}>
                 <label>Annual Family Income (₹)</label>
-                <input name="income" type="number" onChange={handleInputChange} required />
+                <input name="annualIncome" type="number" onChange={handleInputChange} required />
               </div>
-              <button type="submit" className="btn-orange-full" disabled={loading}>{loading ? "Analyzing..." : "Check My Eligibility"}</button>
+              <button type="submit" className="btn-orange-full" disabled={loading}>{loading ? "Saving Profile..." : "Check My Eligibility"}</button>
             </form>
           </div>
         </div>
@@ -372,11 +458,31 @@ const AdminWrapper = () => {
 
 // --- COMPONENT 3: MAIN APP ROUTER ---
 function App() {
+  const navigate = useNavigate();
+  
   return (
-    <Routes>
-      <Route path="/" element={<UserPortal />} />
-      <Route path="/admin" element={<AdminWrapper />} />
-    </Routes>
+    <>
+      <Routes>
+        <Route path="/" element={<UserPortal />} />
+        <Route path="/admin" element={<AdminWrapper />} />
+        {/* PUBLIC BROWSING (NO LOGIN REQUIRED) */}
+        <Route path="/schemes" element={<PublicSchemesPage />} />
+        {/* SEO-friendly category route that reuses the same public listing */}
+        <Route path="/category/:slug" element={<PublicSchemesPage />} />
+        <Route path="/scheme/:schemeId" element={<SchemeDetailPage />} />
+        {/* Scholarships routes */}
+        <Route path="/scholarships" element={<ScholarshipsPage />} />
+        <Route path="/scholarship/:id" element={<ScholarshipDetailPage />} />
+        {/* Eligible scholarships route */}
+        <Route path="/eligible-scholarships" element={<EligibleScholarships />} />
+        {/* User profile and documents routes */}
+        <Route path="/my-profile" element={<MyProfile onBack={() => navigate('/')} />} />
+        <Route path="/edit-profile" element={<EditProfile onBack={() => navigate('/')} />} />
+        <Route path="/my-documents" element={<MyDocuments onBack={() => navigate('/')} />} />
+      </Routes>
+      {/* Dynamic category navbar strip, always visible outside preloader */}
+      <NavCategoriesBar />
+    </>
   );
 }
 

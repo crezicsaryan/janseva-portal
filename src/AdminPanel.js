@@ -3,18 +3,22 @@ import { useNavigate } from 'react-router-dom';
 import './AdminPanel.css';
 import { db } from './firebase'; // We don't need auth here for hardcoded admin
 import { collection, addDoc, getDocs, deleteDoc, doc, updateDoc } from 'firebase/firestore';
+import CategoryManager from './CategoryManager';
 
 const AdminPanel = () => {
   const navigate = useNavigate();
   const [activeTab, setActiveTab] = useState('add'); 
   const [schemes, setSchemes] = useState([]);
   const [loading, setLoading] = useState(false);
+  const [categoryOptions, setCategoryOptions] = useState([]);
+  const [editingSchemeId, setEditingSchemeId] = useState(null);
 
   // --- FORM STATE ---
   const [formData, setFormData] = useState({
     name: '', department: '', description: '', benefitAmount: '', link: '',
     targetRole: 'Student', incomeLimit: '', category: 'All', state: 'All India',
-    ageMin: '', ageMax: '', documents: [], status: 'Draft', deadline: ''
+    ageMin: '', ageMax: '', documents: [], status: 'Draft', deadline: '',
+    navCategories: []
   });
 
   const [customDoc, setCustomDoc] = useState('');
@@ -24,6 +28,17 @@ const AdminPanel = () => {
     "Bonafide Certificate", "Land Record", "Age Proof", 
     "Bank Passbook", "Aadhaar Card (Ref)", "PAN Card"
   ];
+
+  // --- FETCH CATEGORY OPTIONS FOR NAVBAR / PUBLIC FILTERS ---
+  const fetchCategories = async () => {
+    try {
+      const querySnapshot = await getDocs(collection(db, 'schemeCategories'));
+      const list = querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      setCategoryOptions(list.sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0)));
+    } catch (error) {
+      console.error('Error fetching scheme categories:', error);
+    }
+  };
 
   // --- FETCH SCHEMES ---
   const fetchSchemes = async () => {
@@ -42,6 +57,9 @@ const AdminPanel = () => {
     if (activeTab === 'view') {
       fetchSchemes();
     }
+    if (activeTab === 'categories') {
+      fetchCategories();
+    }
   }, [activeTab]);
 
   // --- HANDLERS ---
@@ -59,6 +77,15 @@ const AdminPanel = () => {
     setFormData({ ...formData, documents: updatedDocs });
   };
 
+  const handleNavCategoryToggle = (slug) => {
+    const current = formData.navCategories || [];
+    const exists = current.includes(slug);
+    const updated = exists
+      ? current.filter(s => s !== slug)
+      : [...current, slug];
+    setFormData({ ...formData, navCategories: updated });
+  };
+
   const addCustomDoc = () => {
     if (customDoc.trim() !== "") {
       setFormData({ ...formData, documents: [...formData.documents, customDoc] });
@@ -74,17 +101,30 @@ const AdminPanel = () => {
     }
 
     try {
-      await addDoc(collection(db, "schemes"), {
-        ...formData,
-        createdAt: new Date(),
-        updatedAt: new Date()
-      });
-      alert("Scheme Created Successfully!");
+      if (editingSchemeId) {
+        await updateDoc(doc(db, "schemes", editingSchemeId), {
+          ...formData,
+          updatedAt: new Date()
+        });
+        alert("Scheme Updated Successfully!");
+      } else {
+        await addDoc(collection(db, "schemes"), {
+          ...formData,
+          createdAt: new Date(),
+          updatedAt: new Date()
+        });
+        alert("Scheme Created Successfully!");
+      }
       setFormData({
         name: '', department: '', description: '', benefitAmount: '', link: '',
         targetRole: 'Student', incomeLimit: '', category: 'All', state: 'All India',
-        ageMin: '', ageMax: '', documents: [], status: 'Draft', deadline: ''
+        ageMin: '', ageMax: '', documents: [], status: 'Draft', deadline: '',
+        navCategories: []
       });
+      setEditingSchemeId(null);
+      if (activeTab === 'view') {
+        fetchSchemes();
+      }
     } catch (error) {
       alert("Error: " + error.message);
     }
@@ -111,6 +151,28 @@ const AdminPanel = () => {
     } catch (error) {
       console.error("Error updating status:", error);
     }
+  };
+
+  const handleEditScheme = (scheme) => {
+    setFormData({
+      name: scheme.name || '',
+      department: scheme.department || '',
+      description: scheme.description || '',
+      benefitAmount: scheme.benefitAmount || '',
+      link: scheme.link || '',
+      targetRole: scheme.targetRole || 'Student',
+      incomeLimit: scheme.incomeLimit || '',
+      category: scheme.category || 'All',
+      state: scheme.state || 'All India',
+      ageMin: scheme.ageMin || '',
+      ageMax: scheme.ageMax || '',
+      documents: scheme.documents || [],
+      status: scheme.status || 'Draft',
+      deadline: scheme.deadline || '',
+      navCategories: scheme.navCategories || []
+    });
+    setEditingSchemeId(scheme.id);
+    setActiveTab('add');
   };
 
   // --- NAVIGATION FIXES ---
@@ -141,6 +203,7 @@ const AdminPanel = () => {
       <div className="admin-tabs">
         <button className={activeTab === 'add' ? 'active-tab' : ''} onClick={() => setActiveTab('add')}>1️⃣ Add New Scheme</button>
         <button className={activeTab === 'view' ? 'active-tab' : ''} onClick={() => setActiveTab('view')}>2️⃣ View All Schemes</button>
+        <button className={activeTab === 'categories' ? 'active-tab' : ''} onClick={() => setActiveTab('categories')}>3️⃣ Category Manager</button>
       </div>
 
       {activeTab === 'add' && (
@@ -185,6 +248,30 @@ const AdminPanel = () => {
           </div>
 
           <div className="form-section">
+            <h3>📂 Site Categories (Navbar & Filters)</h3>
+            <p className="hint-text">
+              Choose which public categories this scheme should appear under (e.g. Scholarships, Women, Farmers).
+            </p>
+            <div className="checkbox-grid">
+              {categoryOptions.map(cat => (
+                <label key={cat.id} className="checkbox-label">
+                  <input
+                    type="checkbox"
+                    checked={(formData.navCategories || []).includes(cat.slug || cat.id)}
+                    onChange={() => handleNavCategoryToggle(cat.slug || cat.id)}
+                  />
+                  {cat.name}
+                </label>
+              ))}
+              {!categoryOptions.length && (
+                <p style={{ fontSize: '0.85rem', color: '#666' }}>
+                  No categories yet. Use the Category Manager tab to create them.
+                </p>
+              )}
+            </div>
+          </div>
+
+          <div className="form-section">
             <h3>📄 Documents Required</h3>
             <div className="checkbox-grid">
               {documentOptions.map(doc => (
@@ -213,7 +300,9 @@ const AdminPanel = () => {
             </div>
           </div>
 
-          <button type="submit" className="submit-btn">✅ Publish Scheme</button>
+          <button type="submit" className="submit-btn">
+            {editingSchemeId ? '💾 Save Changes' : '✅ Publish Scheme'}
+          </button>
         </form>
       )}
 
@@ -234,6 +323,9 @@ const AdminPanel = () => {
                         <td>{sch.deadline}</td>
                         <td><span className={`status-badge ${safeStatus.toLowerCase()}`}>{safeStatus}</span></td>
                         <td>
+                          <button onClick={() => handleEditScheme(sch)} className="action-btn">
+                            ✏️ Edit
+                          </button>
                           <button onClick={() => handleToggleStatus(sch)} className="action-btn toggle">
                             {safeStatus === 'Active' ? '⏸ Disable' : '▶ Activate'}
                           </button>
@@ -247,6 +339,9 @@ const AdminPanel = () => {
             </div>
           )}
         </div>
+      )}
+      {activeTab === 'categories' && (
+        <CategoryManager />
       )}
     </div>
   );
